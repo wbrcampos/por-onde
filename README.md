@@ -8,6 +8,10 @@ Python + FastAPI + PostgreSQL puro (sem PostGIS), rodando direto na VPS (sem Doc
 Os contornos ficam em GeoJSON (`jsonb`) com uma caixa envolvente (`box`, índice GiST);
 o banco filtra pela caixa e o Python ([app/geo.py](app/geo.py)) confere o polígono exato.
 
+
+O **app Android** (Kotlin + Jetpack Compose) está em [android/](android/README.md); cada push
+que mexe nele gera o APK no GitHub Actions (artifact `por-onde-debug-apk`).
+
 ## Fontes de dados
 
 | Dado | Fonte | Custo / licença |

@@ -12,3 +12,11 @@ dados/
 *.zip
 *.log
 *.parcial
+
+# App Android (android/)
+android/.gradle/
+android/.kotlin/
+android/.idea/
+android/local.properties
+android/**/build/
+*.apk

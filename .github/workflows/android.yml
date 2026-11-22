@@ -1,0 +1,39 @@
+# Compila o app Android a cada push que mexe em android/ e guarda o APK.
+# Para baixar: aba "Actions" do GitHub → execução mais recente → "Artifacts" → por-onde-debug-apk.
+name: App Android
+
+on:
+  push:
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  pull_request:
+    paths:
+      - "android/**"
+  workflow_dispatch:
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Compilar APK de teste (debug)
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: por-onde-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
