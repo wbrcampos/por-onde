@@ -153,7 +153,17 @@ fun BotaoSecundario(texto: String, icone: ImageVector?, onClick: () -> Unit, mod
 @Composable
 fun FaixaClima(clima: Clima, modifier: Modifier = Modifier) {
     Cartao(modifier) {
-        Rotulo("Clima nas próximas horas")
+        // Mín/máx e chuva do dia na linha do título: economiza uma linha
+        val extremos = listOfNotNull(
+            if (clima.minima != null && clima.maxima != null) "${clima.minima}°–${clima.maxima}°" else null,
+            clima.chanceChuva?.let { "chuva $it%" },
+        )
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Rotulo("Clima nas próximas horas", modifier = Modifier.weight(1f))
+            if (extremos.isNotEmpty()) {
+                Text(extremos.joinToString(" · "), fontSize = 12.sp, color = Cores.TextoSuave, maxLines = 1)
+            }
+        }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             ColunaHora(
                 "Agora", "${clima.temperatura}°", clima.condicao,
@@ -163,11 +173,6 @@ fun FaixaClima(clima: Clima, modifier: Modifier = Modifier) {
                 ColunaHora(h.hora, "${h.temperatura}°", h.condicao, h.chanceChuva)
             }
         }
-        val extremos = listOfNotNull(
-            clima.minima?.let { "mín $it°" }, clima.maxima?.let { "máx $it°" },
-            clima.chanceChuva?.let { "chuva $it%" },
-        )
-        if (extremos.isNotEmpty()) Text(extremos.joinToString(" · "), fontSize = 13.sp, color = Cores.TextoSuave)
     }
 }
 
@@ -266,7 +271,7 @@ fun ItemLista(
 /** Abas grandes de categoria (Ver, Comer, Dormir, Abastecer). */
 @Composable
 fun AbasCategoria(selecionada: Categoria, onSelecionar: (Categoria) -> Unit, modifier: Modifier = Modifier) {
-    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         Categoria.entries.forEach { c ->
             val ativa = c == selecionada
             Surface(
@@ -286,7 +291,8 @@ fun AbasCategoria(selecionada: Categoria, onSelecionar: (Categoria) -> Unit, mod
                     verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
                 ) {
                     Icon(iconeCategoria(c), contentDescription = null)
-                    Text(c.rotulo, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    // Coluna estreita (tablet): "Abastecer" cabe numa linha, sem encostar na borda
+                    Text(c.rotulo, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                 }
             }
         }
@@ -368,4 +374,54 @@ fun BotaoOuvir(descricao: String, onClick: () -> Unit, modifier: Modifier = Modi
             tint = Cores.Ambar, modifier = Modifier.size(22.dp),
         )
     }
+}
+
+/**
+ * Clima compacto (uma linha por horário: hora, ícone e temperatura lado a lado).
+ * Usado na tela da cidade, para sobrar espaço para o mapa.
+ */
+@Composable
+fun FaixaClimaCompacta(clima: Clima, modifier: Modifier = Modifier) {
+    val extremos = listOfNotNull(
+        if (clima.minima != null && clima.maxima != null) "${clima.minima}°–${clima.maxima}°" else null,
+        clima.chanceChuva?.let { "chuva $it%" },
+    )
+    Cartao(modifier, padding = 12.dp) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Rotulo("Clima", modifier = Modifier.weight(1f))
+            if (extremos.isNotEmpty()) {
+                Text(extremos.joinToString(" · "), fontSize = 12.sp, color = Cores.TextoSuave, maxLines = 1)
+            }
+        }
+        HorasClima(clima)
+    }
+}
+
+/** Linha compacta com "Agora" e as próximas 3 horas: hora, ícone, temperatura e chuva (≥10%). */
+@Composable
+fun HorasClima(clima: Clima, modifier: Modifier = Modifier) {
+    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            val horas = listOf(Triple("Agora", clima.temperatura, clima.condicao)) +
+                clima.proximasHoras.drop(1).take(3).map { Triple(it.hora, it.temperatura, it.condicao) }
+            val chuvas = clima.proximasHoras.take(4).map { it.chanceChuva }
+            horas.forEachIndexed { i, (hora, temp, cond) ->
+                val destaque = i == 0
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(hora, fontSize = 11.sp, color = Cores.TextoMudo)
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Icon(
+                            iconeTempo(cond), contentDescription = cond,
+                            tint = if (destaque) Cores.Ambar else Cores.TextoSuave, modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            "$temp°", fontSize = 18.sp, fontWeight = FontWeight.Bold,
+                            color = if (destaque) Cores.Ambar else Cores.Texto,
+                        )
+                        chuvas.getOrNull(i)?.takeIf { it >= 10 }?.let {
+                            Text("$it%", fontSize = 11.sp, color = Cores.Verde)
+                        }
+                    }
+                }
+            }
+        }
 }

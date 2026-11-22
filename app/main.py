@@ -177,6 +177,7 @@ def _proxima_cidade(lat, lon, rumo, velocidade, lugar) -> dict | None:
             minutos, estimado = estrada_km / vel * 60, True
         return {
             "codigo_ibge": c["codigo_ibge"], "nome": c["nome"], "uf": c["uf"],
+            "lat": round(c["clat"], 5), "lon": round(c["clon"], 5),  # centro da cidade (sede)
             "distancia_reta_km": round(c["dist_m"] / 1000, 1),
             "distancia_estrada_km": round(estrada_km, 1),
             "minutos": max(1, round(minutos)),

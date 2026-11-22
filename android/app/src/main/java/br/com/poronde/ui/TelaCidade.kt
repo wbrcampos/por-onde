@@ -92,18 +92,19 @@ fun TelaCidade(estado: EstadoViagem, ctx: Contexto, largo: Boolean) {
                 cidade?.foto?.let { FotoCidade(it, estado.dadosDeMs) }
                 cidade?.resumo?.let { Text(it, fontSize = 15.sp, color = Cores.TextoSuave, lineHeight = 22.sp) }
             }
+            // Meio: onde estou na cidade (mapa ocupa o espaço livre; sem rolagem)
             Column(
-                Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                Modifier.weight(1.2f).fillMaxHeight(),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                (ctx.clima ?: cidade?.clima)?.let { FaixaClima(it) }
-                DadosCidade(ctx, cidade)
-                ctx.proximaCidade?.let { CartaoProximaCidade(it, "Ao sair · próxima cidade") }
+                CartaoMapa(estado, Modifier.weight(1f).fillMaxWidth())
+                ResumoCidade(ctx, cidade)
             }
             Column(
-                Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                Modifier.weight(0.8f).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                // Coluna mais estreita: o espaço vai para o mapa
                 AbasCategoria(categoria, { categoria = it })
                 ListaLugares(carga)
             }
@@ -115,6 +116,7 @@ fun TelaCidade(estado: EstadoViagem, ctx: Contexto, largo: Boolean) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item { Cabecalho(ctx, cidade) }
+            item { CartaoMapa(estado, Modifier.fillMaxWidth().height(240.dp)) }
             cidade?.foto?.let { f -> item { FotoCidade(f, estado.dadosDeMs) } }
             (ctx.clima ?: cidade?.clima)?.let { c -> item { FaixaClima(c) } }
             item { AbasCategoria(categoria, { categoria = it }) }
@@ -130,7 +132,6 @@ fun TelaCidade(estado: EstadoViagem, ctx: Contexto, largo: Boolean) {
                 item { Text(r, fontSize = 15.sp, color = Cores.TextoSuave, lineHeight = 22.sp) }
             }
             item { DadosCidade(ctx, cidade) }
-            ctx.proximaCidade?.let { p -> item { CartaoProximaCidade(p, "Ao sair · próxima cidade") } }
         }
     }
 }
@@ -169,6 +170,24 @@ private fun carregarLugares(posicao: Posicao?, categoria: Categoria, cidade: Cid
         }
     }
     return carga
+}
+
+/** Mapa escuro com o ponto de onde o carro está, e o rótulo "Você está aqui". */
+@Composable
+private fun CartaoMapa(estado: EstadoViagem, modifier: Modifier) {
+    val pos = estado.posicao ?: return
+    Box(modifier.clip(RoundedCornerShape(18.dp)).background(Cores.Superficie)) {
+        MapaPosicao(pos.lat, pos.lon, Modifier.fillMaxSize())
+        Row(
+            Modifier.padding(12.dp).clip(RoundedCornerShape(10.dp))
+                .background(Cores.Fundo.copy(alpha = 0.85f)).padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Box(Modifier.size(10.dp).clip(CircleShape).background(Cores.Ambar))
+            Text("Você está aqui", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
 }
 
 @Composable
@@ -227,6 +246,49 @@ private fun FotoCidade(foto: Foto, atualizadoEm: Long?) {
             "Foto: ${credito.ifBlank { "Wikimedia Commons" }}",
             fontSize = 11.sp, color = Cores.TextoMudo,
         )
+    }
+}
+
+/**
+ * Clima e dados da cidade num card só e baixo (tablet), para o mapa ficar maior:
+ * horários do clima, faixa altitude/habitantes/bioma e um rodapé com o dia e o relevo.
+ */
+@Composable
+private fun ResumoCidade(ctx: Contexto, cidade: Cidade?) {
+    val clima = ctx.clima ?: cidade?.clima
+    val populacao = (cidade?.populacao ?: ctx.municipio.populacao)?.let(::formatarPopulacao)
+    Cartao(padding = 12.dp) {
+        clima?.let {
+            HorasClima(it)
+            HorizontalDivider(color = Cores.Linha, modifier = Modifier.padding(vertical = 4.dp))
+        }
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.Top) {
+            DadoMini("Altitude", ctx.altitudeM?.let { "$it m" } ?: "—", Modifier.weight(0.8f))
+            Divisoria()
+            DadoMini("Habitantes", populacao ?: "—", Modifier.weight(1f))
+            Divisoria()
+            DadoMini("Bioma", ctx.bioma ?: "—", Modifier.weight(1.4f))
+        }
+        val rodape = listOfNotNull(
+            clima?.let { c -> if (c.minima != null && c.maxima != null) "hoje ${c.minima}°–${c.maxima}°" else null },
+            clima?.chanceChuva?.let { "chuva $it%" },
+            ctx.relevo?.let { r -> "relevo: ${r.nome}" },
+        )
+        if (rodape.isNotEmpty()) {
+            Text(
+                rodape.joinToString(" · "), fontSize = 12.sp, color = Cores.TextoSuave,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun DadoMini(rotulo: String, valor: String, modifier: Modifier = Modifier) {
+    Column(modifier.padding(horizontal = 6.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(rotulo.uppercase(), fontSize = 10.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 0.8.sp,
+            color = Cores.TextoMudo)
+        Text(valor, fontSize = 15.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 

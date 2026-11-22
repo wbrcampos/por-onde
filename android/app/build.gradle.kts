@@ -66,4 +66,5 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("org.maplibre.gl:android-sdk:11.8.8") // mapa da cidade (OpenFreeMap)
 }

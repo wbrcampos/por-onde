@@ -1,5 +1,6 @@
 package br.com.poronde.ui
 
+import org.maplibre.android.geometry.LatLng
 import androidx.compose.ui.unit.Dp
 import br.com.poronde.viagem.EventoDiario
 import br.com.poronde.viagem.Trecho
@@ -75,19 +76,19 @@ fun TelaEstrada(estado: EstadoViagem, ctx: Contexto, largo: Boolean) {
             ) {
                 ProximaCidadeDestaque(ctx.proximaCidade, estado.trecho)
             }
-            // Meio: onde estou (sem rolagem: "Na viagem" usa só o espaço que sobra)
+            // Meio: onde estou, com o mapa no espaço livre (sem rolagem)
             Column(
-                Modifier.weight(1f).fillMaxHeight(),
+                Modifier.weight(1.2f).fillMaxHeight(),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 CabecalhoEstrada(ctx)
-                FaixaEstrada(ctx)
-                ctx.clima?.let { FaixaClima(it) }
-                UltimosRegistros(estado.diario, Modifier.weight(1f))
+                // Mapa no espaço livre: carro e próxima cidade (o diário fica na aba Rota)
+                MapaEstrada(estado, ctx, Modifier.weight(1f).fillMaxWidth())
+                ResumoEstrada(ctx)
             }
-            // Direita: por perto, separado por tipo (a única coluna com rolagem)
+            // Direita: por perto, separado por tipo (a única coluna com rolagem; mais estreita)
             Column(
-                Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                Modifier.weight(0.8f).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 ListaAdiante(adiante, estado.semSinal)
@@ -100,6 +101,7 @@ fun TelaEstrada(estado: EstadoViagem, ctx: Contexto, largo: Boolean) {
         ) {
             CabecalhoEstrada(ctx)
             ProximaCidadeDestaque(ctx.proximaCidade, estado.trecho)
+            MapaEstrada(estado, ctx, Modifier.fillMaxWidth().height(240.dp))
             FaixaEstrada(ctx)
             ctx.clima?.let { FaixaClima(it) }
             ListaAdiante(adiante, estado.semSinal)
@@ -122,6 +124,56 @@ private fun CabecalhoEstrada(ctx: Contexto) {
         }
         // A velocidade já aparece no topo da tela; aqui fica só o botão de ouvir
         BotaoOuvir("Ouvir sobre este trecho", onClick = { Viagem.falar(descricaoPaisagem(ctx)) })
+    }
+}
+
+/** Mapa da estrada: zoom mais aberto e a próxima cidade enquadrada junto, quando a API manda. */
+@Composable
+private fun MapaEstrada(estado: EstadoViagem, ctx: Contexto, modifier: Modifier) {
+    val pos = estado.posicao ?: return
+    val p = ctx.proximaCidade
+    val destino = if (p?.lat != null && p.lon != null) LatLng(p.lat, p.lon) else null
+    Box(modifier.clip(RoundedCornerShape(18.dp)).background(Cores.Superficie)) {
+        MapaPosicao(pos.lat, pos.lon, Modifier.fillMaxSize(), zoom = 12.5, destino = destino)
+        if (p != null && destino != null) {
+            Row(
+                Modifier.padding(12.dp).clip(RoundedCornerShape(10.dp))
+                    .background(Cores.Fundo.copy(alpha = 0.85f)).padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Box(Modifier.size(10.dp).clip(CircleShape).background(Cores.Texto))
+                Text(p.nome, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            }
+        }
+    }
+}
+
+/** Clima, altitude/vegetação e relevo num card só e baixo (tablet), para o mapa ficar maior. */
+@Composable
+private fun ResumoEstrada(ctx: Contexto) {
+    val clima = ctx.clima
+    Cartao(padding = 12.dp) {
+        clima?.let {
+            HorasClima(it)
+            HorizontalDivider(color = Cores.Linha, modifier = Modifier.padding(vertical = 4.dp))
+        }
+        Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.Top) {
+            ItemFaixa("Altitude", ctx.altitudeM?.let { "$it m" } ?: "—", null, Modifier.weight(0.8f), tamanho = 16.sp)
+            LinhaVertical()
+            ItemFaixa("Vegetação", ctx.bioma ?: "—", null, Modifier.weight(1.5f), tamanho = 16.sp)
+        }
+        val rodape = listOfNotNull(
+            clima?.let { c -> if (c.minima != null && c.maxima != null) "hoje ${c.minima}°–${c.maxima}°" else null },
+            clima?.chanceChuva?.let { "chuva $it%" },
+            ctx.relevo?.let { "relevo: ${it.nome}" },
+        )
+        if (rodape.isNotEmpty()) {
+            Text(
+                rodape.joinToString(" · "), fontSize = 12.sp, color = Cores.TextoSuave,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 
@@ -322,52 +374,6 @@ private fun NumeroGrande(valor: String, unidade: String) {
         Text(valor, fontSize = 56.sp, fontWeight = FontWeight.Bold, color = Cores.Ambar, lineHeight = 56.sp)
         Text(unidade, fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = Cores.TextoSuave,
             modifier = Modifier.padding(bottom = 8.dp))
-    }
-}
-
-/** Cartão da próxima cidade: distância, tempo, horário de chegada e clima de lá. */
-@Composable
-fun CartaoProximaCidade(p: ProximaCidade, titulo: String, grande: Boolean = false) {
-    val chegada = SimpleDateFormat("HH:mm", Locale("pt", "BR"))
-        .format(Date(System.currentTimeMillis() + p.minutos * 60_000L))
-    Cartao {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-            Column(Modifier.weight(1f)) {
-                Rotulo(titulo)
-                Text(p.nome, fontSize = if (grande) 32.sp else 26.sp, fontWeight = FontWeight.Bold)
-            }
-            Text(
-                "${p.distanciaEstradaKm.roundToInt()} km",
-                fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Cores.TextoSuave,
-            )
-        }
-        Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Cartao(Modifier.weight(1f).fillMaxHeight(), fundo = Cores.Fundo, padding = 10.dp) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Filled.Schedule, contentDescription = null, tint = Cores.Ambar, modifier = Modifier.size(22.dp))
-                    Column {
-                        Text("${p.minutos} min", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = Cores.Ambar)
-                        Text("chega às $chegada", fontSize = 12.sp, color = Cores.TextoSuave)
-                    }
-                }
-            }
-            p.clima?.let { c ->
-                Cartao(Modifier.weight(1f).fillMaxHeight(), fundo = Cores.Fundo, padding = 10.dp) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(Icons.Filled.Thermostat, contentDescription = null, tint = Cores.Ambar, modifier = Modifier.size(22.dp))
-                        Column {
-                            Text("${c.temperatura}°", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                            Text(
-                                listOfNotNull(c.condicao, c.minima?.let { m -> c.maxima?.let { "$m°–$it°" } })
-                                    .joinToString(" · "),
-                                fontSize = 12.sp, color = Cores.TextoSuave,
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        if (p.estimado) Text("Tempo estimado pela distância", fontSize = 11.sp, color = Cores.TextoMudo)
     }
 }
 

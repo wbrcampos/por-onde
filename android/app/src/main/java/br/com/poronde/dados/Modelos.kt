@@ -44,6 +44,8 @@ data class ProximaCidade(
     @SerialName("codigo_ibge") val codigoIbge: Int,
     val nome: String,
     val uf: String,
+    val lat: Double? = null,   // centro da cidade (APIs antigas não mandam)
+    val lon: Double? = null,
     @SerialName("distancia_reta_km") val distanciaRetaKm: Double,
     @SerialName("distancia_estrada_km") val distanciaEstradaKm: Double,
     val minutos: Int,
