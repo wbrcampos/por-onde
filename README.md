@@ -49,6 +49,25 @@ Não precisa de PostGIS, GDAL nem `psql`: tudo roda pelos scripts Python.
 Um banco PostgreSQL (versão 12 ou mais nova) com um usuário que seja dono dele.
 Nenhuma extensão é necessária.
 
+### Atalho: `rodar.sh`
+
+Um comando prepara o ambiente (venv + dependências), confere o banco,
+importa/atualiza os dados e sobe a API:
+
+```bash
+./rodar.sh                 # tudo (estados de IMPORTAR_UFS no .env)
+./rodar.sh PE PB AL        # tudo, só esses estados
+./rodar.sh dados           # só importa/atualiza os dados (aceita --brasil, --apagar-downloads…)
+./rodar.sh osm             # só atualiza os lugares do OpenStreetMap
+./rodar.sh api             # só sobe a API
+./rodar.sh atualizar       # git pull + dependências + reinicia a API
+```
+
+Com o serviço `porondeapi` do systemd instalado (passo 6), a API é reiniciada
+por ele; sem o serviço, o uvicorn roda em primeiro plano na porta 8010
+(`PORTA=8020 ./rodar.sh api` para trocar). Os passos abaixo detalham o que o
+script faz.
+
 ### 3. Código e configuração
 
 ```bash
@@ -79,7 +98,7 @@ qualquer momento: atualiza no lugar, sem duplicar.
 ```bash
 sudo crontab -u www-data -e
 # todo dia 1º às 4h:
-0 4 1 * * cd /opt/ondeestou && .venv/bin/python scripts/importar_tudo.py --so-osm >> importacao.log 2>&1
+0 4 1 * * cd /opt/ondeestou && ./rodar.sh osm >> importacao.log 2>&1
 ```
 
 Os scripts de cada etapa também podem ser rodados sozinhos:
