@@ -33,8 +33,25 @@ CREATE TABLE IF NOT EXISTS areas_urbanas (
     clon         double precision,
     area_m2      double precision
 );
+-- Cada linha é um NÚCLEO urbano (pedaços do IBGE a até ~200 m uns dos outros).
+-- sede = núcleo que contém a sede municipal oficial (a "cidade" de fato);
+-- localidade = nome da sede ou vila (IBGE Localidades) que está no núcleo.
+-- Núcleo sem localidade = pedaço isolado (ex.: à beira da estrada): não é cidade.
+ALTER TABLE areas_urbanas ADD COLUMN IF NOT EXISTS sede boolean NOT NULL DEFAULT false;
+ALTER TABLE areas_urbanas ADD COLUMN IF NOT EXISTS localidade text;
 CREATE INDEX IF NOT EXISTS areas_urbanas_caixa_idx ON areas_urbanas USING gist (caixa);
 CREATE INDEX IF NOT EXISTS areas_urbanas_mun_idx   ON areas_urbanas (codigo_ibge);
+
+-- Sedes municipais e vilas (IBGE "Localidades do Brasil" 2022): ponto oficial
+CREATE TABLE IF NOT EXISTS localidades (
+    codigo       text PRIMARY KEY,
+    codigo_ibge  integer REFERENCES municipios (codigo_ibge),
+    nome         text NOT NULL,
+    tipo         text NOT NULL CHECK (tipo IN ('sede', 'vila')),
+    lat          double precision NOT NULL,
+    lon          double precision NOT NULL
+);
+CREATE INDEX IF NOT EXISTS localidades_mun_idx ON localidades (codigo_ibge);
 
 -- Biomas (IBGE) — vegetação
 CREATE TABLE IF NOT EXISTS biomas (

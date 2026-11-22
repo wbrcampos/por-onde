@@ -153,6 +153,14 @@ def ate_borda(geom: dict, lon: float, lat: float) -> tuple[float, float]:
     return sqrt(d2), degrees(atan2(px, py)) % 360
 
 
+def rumo(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Rumo inicial (graus, 0 = norte) do ponto 1 para o ponto 2."""
+    p1, p2, dl = radians(lat1), radians(lat2), radians(lon2 - lon1)
+    x = sin(dl) * cos(p2)
+    y = cos(p1) * sin(p2) - sin(p1) * cos(p2) * cos(dl)
+    return degrees(atan2(x, y)) % 360
+
+
 def caixa_ao_redor(lat: float, lon: float, raio_m: float) -> tuple[float, float, float, float]:
     """Caixa (min_lon, min_lat, max_lon, max_lat) que cobre um raio em metros."""
     dlat = raio_m / M_POR_GRAU_LAT

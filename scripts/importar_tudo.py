@@ -10,7 +10,7 @@ Opções:
     --rebaixar-ibge     baixa de novo os mapas do IBGE mesmo que já existam em dados/ibge
     --apagar-downloads  apaga dados/ (zips e .pbf) no fim, para economizar disco
 
-Ordem: tabelas → municípios → mapas do IBGE (áreas, biomas, relevo) → OpenStreetMap.
+Ordem: tabelas → municípios → mapas do IBGE (localidades, áreas, biomas, relevo) → OpenStreetMap.
 Pode rodar de novo quando quiser: tudo é atualizado no lugar, sem duplicar.
 """
 import os
@@ -71,10 +71,11 @@ def main() -> None:
         etapa("Tabelas", str(SCRIPTS / "criar_tabelas.py"))
         etapa("Municípios", str(SCRIPTS / "importar_municipios.py"), *ufs)
 
-        faltam = [n for n in ("areas", "biomas", "relevo") if not (IBGE / f"{n}.zip").exists()]
+        mapas = ("localidades", "areas", "biomas", "relevo")  # localidades antes de areas
+        faltam = [n for n in mapas if not (IBGE / f"{n}.zip").exists()]
         if faltam or "--rebaixar-ibge" in opcoes:
             etapa("Download dos mapas do IBGE", str(SCRIPTS / "importar_mapas.py"), "baixar")
-        for nome in ("areas", "biomas", "relevo"):
+        for nome in mapas:
             etapa(f"Mapa: {nome}", str(SCRIPTS / "importar_mapas.py"), nome, str(IBGE / f"{nome}.zip"))
 
     etapa("OpenStreetMap", str(SCRIPTS / "importar_osm.py"), *regioes)

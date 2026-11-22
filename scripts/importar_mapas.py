@@ -1,18 +1,27 @@
 """Importa os mapas do IBGE (shapefiles) para o PostgreSQL — sem PostGIS nem GDAL.
 
-Uso (rode DEPOIS de importar os municípios):
+Uso (rode DEPOIS de importar os municípios; "localidades" antes de "areas"):
+    .venv/bin/python scripts/importar_mapas.py localidades dados/ibge/localidades.zip
     .venv/bin/python scripts/importar_mapas.py areas  dados/ibge/areas.zip
     .venv/bin/python scripts/importar_mapas.py biomas dados/ibge/biomas.zip
     .venv/bin/python scripts/importar_mapas.py relevo dados/ibge/relevo.zip
-    .venv/bin/python scripts/importar_mapas.py baixar   # baixa os 3 arquivos em dados/ibge
+    .venv/bin/python scripts/importar_mapas.py baixar   # baixa os arquivos em dados/ibge
 
 Aceita o .zip do IBGE ou o .shp já descompactado. O shapefile precisa estar em
 graus (SIRGAS 2000 ou WGS84), que é como o IBGE publica esses mapas.
 
-Áreas urbanas: os fragmentos do IBGE são agrupados num único contorno por
-município (só entram municípios já importados). "Loteamento vazio" é ignorado.
+Localidades: pontos oficiais das sedes municipais e das vilas (IBGE 2022).
+
+Áreas urbanas: o IBGE publica a mancha urbana em pedaços (por densidade e
+tipo). Os pedaços de cada município a até DIST_NUCLEO_M uns dos outros viram um
+NÚCLEO. A sede é o núcleo que contém o ponto oficial da sede municipal (não o
+maior: às vezes a ocupação ao longo da rodovia é maior que a cidade). Núcleos
+sem sede nem vila (à beira da estrada, por exemplo) não fazem a API dizer "modo
+cidade" nem "próxima cidade". Só entram municípios já importados;
+"Loteamento vazio" é ignorado.
 """
 import json
+import math
 import os
 import sys
 import time
@@ -30,6 +39,8 @@ from app import config, geo  # noqa: E402
 
 GEOFTP = "https://geoftp.ibge.gov.br"
 ARQUIVOS = {
+    "localidades": "organizacao_do_territorio/estrutura_territorial/localidades/"
+                   "Localidades_do_Brasil/2022/Localidades_Brasil_shp.zip",
     "areas": "organizacao_do_territorio/tipologias_do_territorio/areas_urbanizadas_do_brasil/"
              "2022/Shapefile/AreasUrbanizadas2022_Brasil.zip",
     "biomas": "informacoes_ambientais/estudos_ambientais/biomas/vetores/Biomas_250mil.zip",
@@ -42,6 +53,9 @@ CAMPO_RELEVO = os.getenv("CAMPO_RELEVO", "NOM_UNIDAD")
 CAMPO_RELEVO_DESC = os.getenv("CAMPO_RELEVO_DESC", "DSC_COMPAR")
 CAMPO_TIPO_URBANO = os.getenv("CAMPO_TIPO_URBANO", "Tipo")
 TIPOS_URBANOS_IGNORADOS = {"Loteamento vazio"}
+DIST_NUCLEO_M = float(os.getenv("DIST_NUCLEO_M", "200"))
+# Localidade fora de qualquer núcleo: usa o núcleo mais próximo até esta distância
+DIST_LOCALIDADE_M = float(os.getenv("DIST_LOCALIDADE_M", "500"))
 
 # Tolerância de simplificação em graus (0,001° ≈ 110 m). Biomas têm contornos
 # com centenas de milhares de pontos; simplificar deixa a consulta rápida.
@@ -130,6 +144,49 @@ class IndiceMunicipios:
         return None
 
 
+def _nucleos(polis: list) -> list[list]:
+    """Agrupa polígonos vizinhos (vértices a até DIST_NUCLEO_M) — union-find + grade.
+
+    Cada vértice vai para uma célula de DIST_NUCLEO_M metros; só compara com os
+    vértices das 9 células vizinhas, então o custo cresce de forma linear.
+    """
+    n = len(polis)
+    if n == 1:
+        return [polis]
+    lat0 = sum(geo.caixa({"type": "Polygon", "coordinates": p})[1] for p in polis) / n
+    kx, ky = geo.M_POR_GRAU_LAT * math.cos(math.radians(lat0)), geo.M_POR_GRAU_LAT
+    d = DIST_NUCLEO_M
+    d2 = d * d
+    pai = list(range(n))
+
+    def raiz(i):
+        while pai[i] != i:
+            pai[i] = pai[pai[i]]
+            i = pai[i]
+        return i
+
+    grade: dict[tuple[int, int], list[tuple[float, float, int]]] = {}
+    for i, poli in enumerate(polis):
+        for x, y, *_ in poli[0]:
+            px, py = x * kx, y * ky
+            cx, cy = int(px // d), int(py // d)
+            ri = raiz(i)
+            for vx in (cx - 1, cx, cx + 1):
+                for vy in (cy - 1, cy, cy + 1):
+                    for qx, qy, j in grade.get((vx, vy), ()):
+                        rj = raiz(j)
+                        if rj != ri and (px - qx) ** 2 + (py - qy) ** 2 <= d2:
+                            pai[rj] = ri
+            celula = grade.setdefault((cx, cy), [])
+            # basta um vértice por pedaço em cada célula para achar os vizinhos
+            if not any(j == i for _, _, j in celula):
+                celula.append((px, py, i))
+    grupos: dict[int, list] = {}
+    for i in range(n):
+        grupos.setdefault(raiz(i), []).append(polis[i])
+    return list(grupos.values())
+
+
 def importar_areas(r: shapefile.Reader, con: psycopg.Connection) -> None:
     indice = IndiceMunicipios(con)
     campos = [f[0] for f in r.fields[1:]]
@@ -157,18 +214,82 @@ def importar_areas(r: shapefile.Reader, con: psycopg.Connection) -> None:
         usados += 1
     print(f"{lidos} fragmentos lidos; {usados} agrupados em {len(por_mun)} municípios")
 
+    locs: dict[int, list[dict]] = {}
+    for codigo, nome, tipo, lat, lon in con.execute(
+        "SELECT codigo_ibge, nome, tipo, lat, lon FROM localidades ORDER BY tipo = 'sede' DESC"
+    ):
+        locs.setdefault(codigo, []).append({"nome": nome, "tipo": tipo, "lat": lat, "lon": lon})
+    if not locs:
+        print("AVISO: tabela localidades vazia — rode 'localidades' antes. Usando o maior núcleo como sede.")
+
+    total = sem_sede = 0
     with con.cursor() as cur:
         cur.execute("TRUNCATE areas_urbanas")
         for codigo, polis in por_mun.items():
-            g = geo.simplificar({"type": "MultiPolygon", "coordinates": polis}, TOLERANCIA["areas"])
-            if not g:
+            nucleos = []
+            for grupo in _nucleos(polis):
+                g = geo.simplificar({"type": "MultiPolygon", "coordinates": grupo}, TOLERANCIA["areas"])
+                if g:
+                    nucleos.append({"g": g, "area": geo.area_m2(g), "sede": False, "loc": None, "ponto": None})
+            if not nucleos:
                 continue
-            rep = geo.ponto_representativo(g)
+            nucleos.sort(key=lambda n: n["area"], reverse=True)
+            # cada sede/vila marca o núcleo que a contém (ou o mais próximo, até DIST_LOCALIDADE_M)
+            for loc in locs.get(codigo, []):
+                alvo = next((n for n in nucleos if geo.contem(n["g"], loc["lon"], loc["lat"])), None)
+                if alvo is None:
+                    dist, alvo = min(((geo.ate_borda(n["g"], loc["lon"], loc["lat"])[0], n) for n in nucleos),
+                                     key=lambda t: t[0])
+                    if dist > DIST_LOCALIDADE_M:
+                        continue
+                if alvo["loc"] is None:  # sedes vêm primeiro: não são trocadas por vila
+                    alvo["loc"] = loc["nome"]
+                    alvo["sede"] = loc["tipo"] == "sede"
+                    alvo["ponto"] = (loc["lon"], loc["lat"])
+            if not any(n["sede"] for n in nucleos):
+                sem_sede += 1
+                nucleos[0]["sede"] = True  # sem ponto oficial: o maior núcleo
+            for n in nucleos:
+                ponto = n["ponto"] or geo.ponto_representativo(n["g"])
+                cur.execute(
+                    """INSERT INTO areas_urbanas (codigo_ibge, sede, localidade, geom, caixa, clat, clon, area_m2)
+                       VALUES (%s, %s, %s, %s::jsonb, %s::box, %s, %s, %s)""",
+                    (codigo, n["sede"], n["loc"], json.dumps(n["g"]), geo.caixa_sql(geo.caixa(n["g"])),
+                     ponto[1], ponto[0], n["area"]),
+                )
+            total += len(nucleos)
+    print(f"{total} núcleos urbanos gravados; {len(por_mun)} sedes"
+          + (f" ({sem_sede} sem ponto oficial: usado o maior núcleo)" if sem_sede else ""))
+
+
+def importar_localidades(r: shapefile.Reader, con: psycopg.Connection) -> None:
+    campos = [f[0] for f in r.fields[1:]]
+    faltam = {"CD_MUN", "CT_LOCALID", "SCT_LOCALI", "CD_LOCALID", "NM_LOCALID"} - set(campos)
+    if faltam:
+        sys.exit(f"Colunas {faltam} não existem. Colunas do arquivo: {campos}")
+    municipios = {c for (c,) in con.execute("SELECT codigo_ibge FROM municipios")}
+    n = 0
+    with con.cursor() as cur:
+        cur.execute("TRUNCATE localidades")
+        for sr in r.iterShapeRecords():
+            rec = sr.record.as_dict()
+            if rec["CT_LOCALID"] == "Cidade" and rec["SCT_LOCALI"] == "Sede Municipal":
+                tipo = "sede"
+            elif rec["CT_LOCALID"] == "Vila":
+                tipo = "vila"
+            else:
+                continue
+            codigo = int(rec["CD_MUN"])
+            if codigo not in municipios or not sr.shape.points:
+                continue
+            lon, lat = sr.shape.points[0][:2]
             cur.execute(
-                """INSERT INTO areas_urbanas (codigo_ibge, geom, caixa, clat, clon, area_m2)
-                   VALUES (%s, %s::jsonb, %s::box, %s, %s, %s)""",
-                (codigo, json.dumps(g), geo.caixa_sql(geo.caixa(g)), rep[1], rep[0], geo.area_m2(g)),
+                """INSERT INTO localidades (codigo, codigo_ibge, nome, tipo, lat, lon)
+                   VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (codigo) DO NOTHING""",
+                (str(rec["CD_LOCALID"]), codigo, rec["NM_LOCALID"].strip(), tipo, lat, lon),
             )
+            n += 1
+    print(f"{n} localidades (sedes e vilas) gravadas")
 
 
 def importar_poligonos(tipo: str, r: shapefile.Reader, con: psycopg.Connection) -> None:
@@ -217,6 +338,8 @@ def main() -> None:
         print(f"{caminho.name}: {len(r)} feições, colunas {[f[0] for f in r.fields[1:]]}")
         if tipo == "areas":
             importar_areas(r, con)
+        elif tipo == "localidades":
+            importar_localidades(r, con)
         else:
             importar_poligonos(tipo, r, con)
         con.execute(f"ANALYZE {'areas_urbanas' if tipo == 'areas' else tipo}")

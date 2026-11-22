@@ -14,7 +14,6 @@ from fastapi import FastAPI, HTTPException, Query
 from . import config, db, fontes, geo
 
 RAIO_PROXIMA_M = int(os.getenv("RAIO_PROXIMA_CIDADE_M", "80000"))
-AREA_MIN_URBANA_M2 = float(os.getenv("AREA_MIN_URBANA_M2", "500000"))  # ignora vilarejos muito pequenos
 ANGULO_MAX = float(os.getenv("ANGULO_MAX_GRAUS", "45"))
 VELOCIDADE_PADRAO = float(os.getenv("VELOCIDADE_PADRAO_KMH", "70"))
 
@@ -103,8 +102,13 @@ def contexto(
     if not achados:
         raise HTTPException(404, "Ponto fora dos municípios importados")
     lugar = achados[0]
-    areas = _que_contem("areas_urbanas", "codigo_ibge", lat, lon)
-    lugar["urbano"] = bool(areas)
+    # Núcleo urbano em que o ponto está. Conta como cidade a sede do município ou
+    # uma vila oficial (IBGE); pedaço isolado à beira da estrada não conta.
+    nucleos = _que_contem("areas_urbanas", "codigo_ibge, sede, localidade", lat, lon)
+    urbanos = [n for n in nucleos if n["sede"] or n["localidade"]]
+    lugar["urbano"] = bool(urbanos)
+    lugar["localidade"] = urbanos[0]["localidade"] if urbanos else None
+    lugar["sede_atual"] = next((n["codigo_ibge"] for n in urbanos if n["sede"]), None)
     biomas = _que_contem("biomas", "nome", lat, lon)
     relevos = _que_contem("relevo", "nome, descricao", lat, lon)
     # O ponto está num município (terra), mas o mapa de relevo 1:5 mi é grosseiro e
@@ -126,6 +130,7 @@ def contexto(
             "uf": lugar["uf"], "estado": lugar["estado"], "populacao": lugar["populacao"],
         },
         "zona": "urbana" if lugar["urbano"] else "rural",
+        "localidade": lugar["localidade"],  # sede ou vila em que o ponto está (modo cidade)
         "altitude_m": round(alt) if alt is not None else None,
         "bioma": lugar["bioma"],
         "relevo": {"nome": lugar["relevo"], "descricao": lugar["relevo_desc"]} if lugar["relevo"] else None,
@@ -142,26 +147,24 @@ def _proxima_cidade(lat, lon, rumo, velocidade, lugar) -> dict | None:
         FROM areas_urbanas a
         JOIN municipios m USING (codigo_ibge)
         WHERE a.caixa && %(caixa)s::box                       -- filtro rápido (índice)
-          AND a.area_m2 >= %(area_min)s
-          AND NOT (%(urbano)s AND a.codigo_ibge = %(atual)s)   -- dentro da cidade, ignora ela mesma
+          AND a.sede                                          -- só a cidade de fato
+          AND a.codigo_ibge IS DISTINCT FROM %(atual)s        -- dentro da sede, ignora ela mesma
         """,
-        {"caixa": _caixa_sql(lat, lon, RAIO_PROXIMA_M), "area_min": AREA_MIN_URBANA_M2,
-         "urbano": lugar["urbano"], "atual": lugar["codigo_ibge"]},
+        {"caixa": _caixa_sql(lat, lon, RAIO_PROXIMA_M), "atual": lugar["sede_atual"]},
     )
     geoms = _geometrias("areas_urbanas", [r["id"] for r in linhas])
     candidatos = []
     for r in linhas:
         if r["id"] not in geoms:
             continue
-        dist, azimute = geo.ate_borda(geoms[r["id"]], lon, lat)
-        if 0 < dist <= RAIO_PROXIMA_M:
+        dist, _ = geo.ate_borda(geoms[r["id"]], lon, lat)
+        if dist <= RAIO_PROXIMA_M:
+            # Direção até o CENTRO da cidade: a borda mais próxima pode estar de lado
+            # (cidade comprida ou a estrada passando rente) e fazer pular a cidade certa.
+            azimute = geo.rumo(lat, lon, r["clat"], r["clon"])
             candidatos.append({**r, "dist_m": dist, "azimute": azimute})
     candidatos.sort(key=lambda c: c["dist_m"])
-    vistos: set[int] = set()
     for c in candidatos:
-        if c["codigo_ibge"] in vistos:
-            continue
-        vistos.add(c["codigo_ibge"])
         if rumo is not None and _diferenca_angulo(rumo, c["azimute"]) > ANGULO_MAX:
             continue  # está atrás ou para o lado
         estrada_km = c["dist_m"] * config.FATOR_ESTRADA / 1000
@@ -175,6 +178,48 @@ def _proxima_cidade(lat, lon, rumo, velocidade, lugar) -> dict | None:
             "clima": _clima_municipio(c["codigo_ibge"], c["clat"], c["clon"]),
         }
     return None
+
+
+# Ordem dos destaques: atrativos de verdade primeiro; estátuas e obras de arte
+# só entram depois (a não ser que tenham artigo na Wikipedia/Wikidata).
+_PESO_TIPO = {
+    "attraction": 0, "museum": 0, "viewpoint": 0, "theme_park": 0, "zoo": 0,
+    "nature_reserve": 0, "castle": 0, "fort": 0, "ruins": 0, "archaeological_site": 0,
+    "gallery": 1, "memorial": 2, "monument": 2, "artwork": 3,
+}
+
+
+def _destaques(codigo_ibge: int, caixa: str, clat: float, clon: float, limite: int = 10) -> list[dict]:
+    contorno = _geometrias("municipios", [codigo_ibge]).get(codigo_ibge)
+    if not contorno:
+        return []
+    achados = []
+    for p in db.varios(
+        """
+        SELECT nome, tipo, lat, lon, tags ? 'wikipedia' OR tags ? 'wikidata' AS famoso FROM pois
+        WHERE local <@ %s::box AND categoria = 'ver' AND nome IS NOT NULL
+        """,
+        (caixa,),
+    ):
+        if geo.contem(contorno, p["lon"], p["lat"]):
+            p["distancia_m"] = round(geo.distancia_m(clat, clon, p["lat"], p["lon"]))
+            peso = _PESO_TIPO.get(p["tipo"], 2)
+            if p.pop("famoso"):
+                peso = min(peso, 1)
+            p["_peso"] = peso
+            achados.append(p)
+    achados.sort(key=lambda p: (p["_peso"], p["distancia_m"]))
+    escolhidos: list[dict] = []
+    for p in achados:
+        # o mesmo lugar mapeado duas vezes (ponto + área, nomes parecidos)
+        if any(geo.distancia_m(p["lat"], p["lon"], e["lat"], e["lon"]) < 150 for e in escolhidos):
+            continue
+        escolhidos.append(p)
+        if len(escolhidos) == limite:
+            break
+    for p in escolhidos:
+        del p["_peso"]
+    return escolhidos
 
 
 @app.get("/cidade/{codigo_ibge}")
@@ -191,7 +236,8 @@ def cidade(codigo_ibge: int):
         raise HTTPException(404, "Município não encontrado")
 
     info = db.um(
-        "SELECT * FROM cidade_info WHERE codigo_ibge = %s AND atualizado_em > now() - %s",
+        """SELECT * FROM cidade_info WHERE codigo_ibge = %s AND atualizado_em > now() - %s
+           AND (foto_url IS NULL OR foto_licenca IS NOT NULL)""",  # foto sem licença: busca de novo
         (codigo_ibge, timedelta(days=config.CACHE_CIDADE_DIAS)),
     )
     if not info:
@@ -218,20 +264,10 @@ def cidade(codigo_ibge: int):
         else:  # se a Wikipedia falhar, usa o que já tinha (mesmo antigo)
             info = db.um("SELECT * FROM cidade_info WHERE codigo_ibge = %s", (codigo_ibge,))
 
-    destaques = []
-    if m["caixa"] and m["clat"] is not None:
-        contorno = _geometrias("municipios", [codigo_ibge]).get(codigo_ibge)
-        for p in db.varios(
-            """
-            SELECT nome, tipo, lat, lon FROM pois
-            WHERE local <@ %s::box AND categoria = 'ver' AND nome IS NOT NULL
-            """,
-            (m["caixa"],),
-        ):
-            if contorno and geo.contem(contorno, p["lon"], p["lat"]):
-                p["distancia_m"] = round(geo.distancia_m(m["clat"], m["clon"], p["lat"], p["lon"]))
-                destaques.append(p)
-        destaques = sorted(destaques, key=lambda p: p["distancia_m"])[:10]
+    # Centro da cidade = centro da sede urbana (o ponto do município pode cair na zona rural)
+    sede = db.um("SELECT clat, clon FROM areas_urbanas WHERE codigo_ibge = %s AND sede", (codigo_ibge,))
+    clat, clon = (sede["clat"], sede["clon"]) if sede else (m["clat"], m["clon"])
+    destaques = _destaques(codigo_ibge, m["caixa"], clat, clon) if m["caixa"] and clat is not None else []
     try:
         artigos = fontes.artigos_proximos(m["clat"], m["clon"])
     except Exception:

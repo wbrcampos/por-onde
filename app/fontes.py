@@ -1,6 +1,6 @@
 """Acesso às fontes externas: Open-Meteo (clima e altitude) e Wikipedia/Wikimedia."""
 from datetime import timedelta
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlparse
 
 import httpx
 
@@ -99,9 +99,27 @@ def _resumo(titulo: str) -> dict | None:
     return None if d.get("type") == "disambiguation" else d
 
 
+def _arquivo_commons(url_imagem: str) -> str | None:
+    """Nome do arquivo no Commons a partir da URL da imagem.
+
+    Formatos vistos:
+      upload.wikimedia.org/wikipedia/commons/b/b6/Arquivo.png
+      upload.wikimedia.org/wikipedia/commons/thumb/b/b6/Arquivo.png/330px-Arquivo.png
+      thumb.wikimedia.org/wikipedia/commons/thumb/b/b6/Arquivo.png/330px-Arquivo.png?utm_source=...
+    """
+    partes = [p for p in urlparse(url_imagem).path.split("/") if p]  # sem ?query
+    if "thumb" in partes:
+        i = partes.index("thumb")
+        # depois de "thumb" vêm as 2 pastas de hash (b/b6) e o nome original
+        return unquote(partes[i + 3]) if len(partes) > i + 3 else None
+    return unquote(partes[-1]) if partes else None
+
+
 def _credito_foto(url_imagem: str) -> tuple[str | None, str | None]:
     """Autor e licença da foto no Commons (a licença exige dar crédito)."""
-    arquivo = unquote(url_imagem.rsplit("/", 1)[-1])
+    arquivo = _arquivo_commons(url_imagem)
+    if not arquivo:
+        return None, None
     r = _http.get(
         "https://commons.wikimedia.org/w/api.php",
         params={"action": "query", "titles": f"File:{arquivo}", "prop": "imageinfo",
