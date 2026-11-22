@@ -119,9 +119,19 @@ Para acesso externo com HTTPS, use `deploy/nginx-porondeapi.conf` + certbot.
 ## Como funciona o modo cidade x estrada
 
 O contorno do município inclui a zona rural, então não serve. A API usa as
-**áreas urbanizadas do IBGE**: GPS dentro da mancha urbana = `cidade`; fora =
-`estrada` (e a resposta diz "zona rural de Gravatá"). Manchas menores que
-`AREA_MIN_URBANA_M2` (vilarejos) não contam como "próxima cidade".
+**áreas urbanizadas do IBGE** junto com os **pontos oficiais das sedes e vilas**
+(IBGE Localidades 2022):
+
+1. Os pedaços da mancha urbana de cada município a até 200 m uns dos outros
+   (`DIST_NUCLEO_M`) viram um **núcleo**.
+2. O núcleo que contém o ponto da sede municipal é a **sede** — não o maior: às
+   vezes a ocupação ao longo da rodovia é maior que a cidade (ex.: Sairé, PE).
+   Núcleos com uma vila oficial são distritos.
+3. GPS dentro da sede ou de uma vila = `cidade` (o campo `localidade` diz qual);
+   em qualquer outro lugar, inclusive pedaços urbanos isolados à beira da
+   estrada, = `estrada` (e a resposta diz "zona rural de Gravatá").
+4. **Próxima cidade** considera só sedes: a distância é até a borda da sede e a
+   direção é até o centro dela (a borda mais próxima pode estar de lado).
 
 ## Cache
 

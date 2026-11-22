@@ -223,41 +223,43 @@ def importar_areas(r: shapefile.Reader, con: psycopg.Connection) -> None:
         print("AVISO: tabela localidades vazia — rode 'localidades' antes. Usando o maior núcleo como sede.")
 
     total = sem_sede = 0
+    linhas = []
+    for codigo, polis in por_mun.items():
+        nucleos = []
+        for grupo in _nucleos(polis):
+            g = geo.simplificar({"type": "MultiPolygon", "coordinates": grupo}, TOLERANCIA["areas"])
+            if g:
+                nucleos.append({"g": g, "area": geo.area_m2(g), "sede": False, "loc": None, "ponto": None})
+        if not nucleos:
+            continue
+        nucleos.sort(key=lambda n: n["area"], reverse=True)
+        # cada sede/vila marca o núcleo que a contém (ou o mais próximo, até DIST_LOCALIDADE_M)
+        for loc in locs.get(codigo, []):
+            alvo = next((n for n in nucleos if geo.contem(n["g"], loc["lon"], loc["lat"])), None)
+            if alvo is None:
+                dist, alvo = min(((geo.ate_borda(n["g"], loc["lon"], loc["lat"])[0], n) for n in nucleos),
+                                 key=lambda t: t[0])
+                if dist > DIST_LOCALIDADE_M:
+                    continue
+            if alvo["loc"] is None:  # sedes vêm primeiro: não são trocadas por vila
+                alvo["loc"] = loc["nome"]
+                alvo["sede"] = loc["tipo"] == "sede"
+                alvo["ponto"] = (loc["lon"], loc["lat"])
+        if not any(n["sede"] for n in nucleos):
+            sem_sede += 1
+            nucleos[0]["sede"] = True  # sem ponto oficial: o maior núcleo
+        for n in nucleos:
+            ponto = n["ponto"] or geo.ponto_representativo(n["g"])
+            linhas.append((codigo, n["sede"], n["loc"], json.dumps(n["g"]),
+                           geo.caixa_sql(geo.caixa(n["g"])), ponto[1], ponto[0], n["area"]))
+        total += len(nucleos)
+    # Um COPY só (gravar linha a linha num banco remoto leva uma ida e volta por linha)
     with con.cursor() as cur:
         cur.execute("TRUNCATE areas_urbanas")
-        for codigo, polis in por_mun.items():
-            nucleos = []
-            for grupo in _nucleos(polis):
-                g = geo.simplificar({"type": "MultiPolygon", "coordinates": grupo}, TOLERANCIA["areas"])
-                if g:
-                    nucleos.append({"g": g, "area": geo.area_m2(g), "sede": False, "loc": None, "ponto": None})
-            if not nucleos:
-                continue
-            nucleos.sort(key=lambda n: n["area"], reverse=True)
-            # cada sede/vila marca o núcleo que a contém (ou o mais próximo, até DIST_LOCALIDADE_M)
-            for loc in locs.get(codigo, []):
-                alvo = next((n for n in nucleos if geo.contem(n["g"], loc["lon"], loc["lat"])), None)
-                if alvo is None:
-                    dist, alvo = min(((geo.ate_borda(n["g"], loc["lon"], loc["lat"])[0], n) for n in nucleos),
-                                     key=lambda t: t[0])
-                    if dist > DIST_LOCALIDADE_M:
-                        continue
-                if alvo["loc"] is None:  # sedes vêm primeiro: não são trocadas por vila
-                    alvo["loc"] = loc["nome"]
-                    alvo["sede"] = loc["tipo"] == "sede"
-                    alvo["ponto"] = (loc["lon"], loc["lat"])
-            if not any(n["sede"] for n in nucleos):
-                sem_sede += 1
-                nucleos[0]["sede"] = True  # sem ponto oficial: o maior núcleo
-            for n in nucleos:
-                ponto = n["ponto"] or geo.ponto_representativo(n["g"])
-                cur.execute(
-                    """INSERT INTO areas_urbanas (codigo_ibge, sede, localidade, geom, caixa, clat, clon, area_m2)
-                       VALUES (%s, %s, %s, %s::jsonb, %s::box, %s, %s, %s)""",
-                    (codigo, n["sede"], n["loc"], json.dumps(n["g"]), geo.caixa_sql(geo.caixa(n["g"])),
-                     ponto[1], ponto[0], n["area"]),
-                )
-            total += len(nucleos)
+        with cur.copy("COPY areas_urbanas (codigo_ibge, sede, localidade, geom, caixa, clat, clon, area_m2) "
+                      "FROM STDIN") as copy:
+            for linha in linhas:
+                copy.write_row(linha)
     print(f"{total} núcleos urbanos gravados; {len(por_mun)} sedes"
           + (f" ({sem_sede} sem ponto oficial: usado o maior núcleo)" if sem_sede else ""))
 
@@ -268,28 +270,27 @@ def importar_localidades(r: shapefile.Reader, con: psycopg.Connection) -> None:
     if faltam:
         sys.exit(f"Colunas {faltam} não existem. Colunas do arquivo: {campos}")
     municipios = {c for (c,) in con.execute("SELECT codigo_ibge FROM municipios")}
-    n = 0
+    linhas: dict[str, tuple] = {}
+    for sr in r.iterShapeRecords():
+        rec = sr.record.as_dict()
+        if rec["CT_LOCALID"] == "Cidade" and rec["SCT_LOCALI"] == "Sede Municipal":
+            tipo = "sede"
+        elif rec["CT_LOCALID"] == "Vila":
+            tipo = "vila"
+        else:
+            continue
+        codigo = int(rec["CD_MUN"])
+        if codigo not in municipios or not sr.shape.points:
+            continue
+        lon, lat = sr.shape.points[0][:2]
+        linhas.setdefault(str(rec["CD_LOCALID"]), (str(rec["CD_LOCALID"]), codigo,
+                                                   rec["NM_LOCALID"].strip(), tipo, lat, lon))
     with con.cursor() as cur:
         cur.execute("TRUNCATE localidades")
-        for sr in r.iterShapeRecords():
-            rec = sr.record.as_dict()
-            if rec["CT_LOCALID"] == "Cidade" and rec["SCT_LOCALI"] == "Sede Municipal":
-                tipo = "sede"
-            elif rec["CT_LOCALID"] == "Vila":
-                tipo = "vila"
-            else:
-                continue
-            codigo = int(rec["CD_MUN"])
-            if codigo not in municipios or not sr.shape.points:
-                continue
-            lon, lat = sr.shape.points[0][:2]
-            cur.execute(
-                """INSERT INTO localidades (codigo, codigo_ibge, nome, tipo, lat, lon)
-                   VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (codigo) DO NOTHING""",
-                (str(rec["CD_LOCALID"]), codigo, rec["NM_LOCALID"].strip(), tipo, lat, lon),
-            )
-            n += 1
-    print(f"{n} localidades (sedes e vilas) gravadas")
+        with cur.copy("COPY localidades (codigo, codigo_ibge, nome, tipo, lat, lon) FROM STDIN") as copy:
+            for linha in linhas.values():
+                copy.write_row(linha)
+    print(f"{len(linhas)} localidades (sedes e vilas) gravadas")
 
 
 def importar_poligonos(tipo: str, r: shapefile.Reader, con: psycopg.Connection) -> None:

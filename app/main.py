@@ -203,10 +203,12 @@ def _destaques(codigo_ibge: int, caixa: str, clat: float, clon: float, limite: i
     ):
         if geo.contem(contorno, p["lon"], p["lat"]):
             p["distancia_m"] = round(geo.distancia_m(clat, clon, p["lat"], p["lon"]))
+            famoso = p.pop("famoso")
             peso = _PESO_TIPO.get(p["tipo"], 2)
-            if p.pop("famoso"):
+            if famoso:
                 peso = min(peso, 1)
-            p["_peso"] = peso
+            # dentro do mesmo peso, quem tem artigo na Wikipedia/Wikidata vem antes
+            p["_peso"] = (peso, not famoso)
             achados.append(p)
     achados.sort(key=lambda p: (p["_peso"], p["distancia_m"]))
     escolhidos: list[dict] = []
