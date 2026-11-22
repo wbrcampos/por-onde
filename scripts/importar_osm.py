@@ -58,6 +58,19 @@ def classificar(t: dict) -> str | None:
     return None
 
 
+def nome_exibido(tags: dict, categoria: str) -> str | None:
+    """Nome do lugar; sem nome, usa a marca/operador (muito posto só tem brand=Ipiranga)."""
+    nome = (tags.get("name") or "").strip()
+    if nome:
+        return nome
+    marca = (tags.get("brand") or tags.get("operator") or "").strip()
+    if not marca:
+        return None
+    if categoria == "abastecer" and tags.get("amenity") == "fuel" and not marca.lower().startswith("posto"):
+        return f"Posto {marca}"
+    return marca
+
+
 def baixar_arquivo(url: str, destino: Path) -> None:
     """Baixa para um .parcial e só troca o arquivo no fim; até 5 tentativas."""
     parcial = destino.with_name(destino.name + ".parcial")
@@ -125,7 +138,7 @@ def ler_pois(pbf: Path):
             lat = sum(p.lat for p in locs) / len(locs)
             lon = sum(p.lon for p in locs) / len(locs)
         tipo = next((tags[k] for k in CHAVES if k in tags), None)
-        yield (osm_id, cat, tipo, tags.get("name"), json.dumps(tags, ensure_ascii=False),
+        yield (osm_id, cat, tipo, nome_exibido(tags, cat), json.dumps(tags, ensure_ascii=False),
                round(lat, 7), round(lon, 7))
 
 

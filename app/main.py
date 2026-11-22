@@ -113,7 +113,7 @@ def contexto(
     relevos = _que_contem("relevo", "nome, descricao", lat, lon)
     # O ponto está num município (terra), mas o mapa de relevo 1:5 mi é grosseiro e
     # cobre a orla com "Massa d'água": nesse caso é melhor não dizer nada.
-    relevos = [r for r in relevos if not r["nome"].lower().startswith("massa d")]
+    relevos = [r for r in relevos if not r["nome"].lower().startswith(("massa d", "corpo d"))]
     lugar["bioma"] = biomas[0]["nome"] if biomas else None
     lugar["relevo"] = relevos[0]["nome"] if relevos else None
     lugar["relevo_desc"] = relevos[0]["descricao"] if relevos else None
@@ -167,14 +167,20 @@ def _proxima_cidade(lat, lon, rumo, velocidade, lugar) -> dict | None:
     for c in candidatos:
         if rumo is not None and _diferenca_angulo(rumo, c["azimute"]) > ANGULO_MAX:
             continue  # está atrás ou para o lado
-        estrada_km = c["dist_m"] * config.FATOR_ESTRADA / 1000
-        vel = velocidade if velocidade and velocidade > 20 else VELOCIDADE_PADRAO
+        # Rota real pela estrada (OSRM) até o centro da cidade; se falhar, estimativa
+        r = fontes.rota(lat, lon, c["clat"], c["clon"], str(c["codigo_ibge"]))
+        if r:
+            estrada_km, minutos, estimado = r["km"], r["min"], False
+        else:
+            estrada_km = c["dist_m"] * config.FATOR_ESTRADA / 1000
+            vel = velocidade if velocidade and velocidade > 20 else VELOCIDADE_PADRAO
+            minutos, estimado = estrada_km / vel * 60, True
         return {
             "codigo_ibge": c["codigo_ibge"], "nome": c["nome"], "uf": c["uf"],
             "distancia_reta_km": round(c["dist_m"] / 1000, 1),
             "distancia_estrada_km": round(estrada_km, 1),
-            "minutos": round(estrada_km / vel * 60),
-            "estimado": True,  # sem rota real; com a rota do app, troque pelo valor do Google Routes
+            "minutos": max(1, round(minutos)),
+            "estimado": estimado,  # True = linha reta × fator (OSRM indisponível)
             "clima": _clima_municipio(c["codigo_ibge"], c["clat"], c["clon"]),
         }
     return None
@@ -315,6 +321,8 @@ def lugares(
           FROM pois
           WHERE categoria = %(cat)s
             AND local <@ %(caixa)s::box                        -- filtro rápido (índice)
+            -- sem nome só faz sentido para posto ("Posto de combustível a 300 m")
+            AND (nome IS NOT NULL OR categoria IN ('abastecer', 'dormir'))
         ) t
         WHERE distancia_m <= %(raio)s
         ORDER BY distancia_m

@@ -92,7 +92,7 @@ chmod 600 .env
 ```
 
 Cria as tabelas e baixa e importa, nesta ordem: municípios (IBGE), áreas
-urbanizadas 2022, biomas 1:250 mil, relevo 1:5 mi e lugares do OpenStreetMap
+urbanizadas 2022, biomas 1:250 mil, relevo 1:250 mil e lugares do OpenStreetMap
 da região de cada estado. No Nordeste leva uns 5 minutos e baixa ~510 MB em
 `dados/` (use `--apagar-downloads` para apagar no fim). Pode rodar de novo a
 qualquer momento: atualiza no lugar, sem duplicar.
@@ -136,6 +136,28 @@ O contorno do município inclui a zona rural, então não serve. A API usa as
    estrada, = `estrada` (e a resposta diz "zona rural de Gravatá").
 4. **Próxima cidade** considera só sedes: a distância é até a borda da sede e a
    direção é até o centro dela (a borda mais próxima pode estar de lado).
+
+## Rotas (distância e tempo reais)
+
+A "próxima cidade" usa o **OSRM** para a distância e o tempo de carro pela estrada
+(com cache por ~500 m de deslocamento). Se ele falhar, a API volta para a
+estimativa (linha reta × `FATOR_ESTRADA`) e marca `"estimado": true`.
+
+Por padrão `OSRM_URL` aponta para o servidor público de demonstração, que tem
+limite de uso e **não é para produção**. Na VPS (precisa de ~4 GB de RAM para o
+Nordeste no preparo; depois bem menos):
+
+```bash
+sudo apt install osrm-backend          # Ubuntu 24.04: pacote "osrm-backend"
+mkdir -p /opt/osrm && cd /opt/osrm
+cp /opt/ondeestou/dados/osm/nordeste-latest.osm.pbf .
+osrm-extract -p /usr/share/osrm/profiles/car.lua nordeste-latest.osm.pbf
+osrm-partition nordeste-latest.osrm && osrm-customize nordeste-latest.osrm
+osrm-routed --algorithm mld --ip 127.0.0.1 --port 5000 nordeste-latest.osrm
+```
+
+Deixe o `osrm-routed` como serviço do systemd e ponha `OSRM_URL=http://127.0.0.1:5000`
+no `.env`. Refaça o preparo quando atualizar o OSM (1x por mês basta).
 
 ## Cache
 

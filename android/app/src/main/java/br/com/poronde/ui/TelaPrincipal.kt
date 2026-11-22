@@ -1,5 +1,6 @@
 package br.com.poronde.ui
 
+import androidx.compose.material.icons.filled.SignalCellularConnectedNoInternet0Bar
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -68,6 +69,7 @@ fun TelaPrincipal(estado: EstadoViagem, onIniciar: () -> Unit, onEncerrar: () ->
 
         Column(Modifier.fillMaxSize()) {
             BarraTopo(estado, largo, onEncerrar)
+            if (estado.ativa && aba == Aba.AGORA) AvisoSemSinal(estado)
 
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 val contexto = estado.contexto
@@ -233,5 +235,30 @@ private fun TelaParada(onIniciar: () -> Unit) {
             modifier = Modifier.widthIn(max = 420.dp),
         )
         BotaoPrincipal("Iniciar viagem", Icons.Filled.PlayArrow, onIniciar, Modifier.widthIn(min = 240.dp))
+    }
+}
+
+/**
+ * Faixa discreta quando os dados na tela não são de agora: sem sinal (a última
+ * consulta falhou) ou dados salvos de antes de abrir o app, ainda atualizando.
+ */
+@Composable
+private fun AvisoSemSinal(estado: EstadoViagem) {
+    val de = estado.dadosDeMs ?: return
+    if (estado.contexto == null) return
+    val antigo = System.currentTimeMillis() - de > 3 * 60_000L
+    if (!estado.semSinal && !antigo) return
+    val hora = java.text.SimpleDateFormat("HH:mm", java.util.Locale("pt", "BR")).format(java.util.Date(de))
+    val texto = if (estado.semSinal) "Sem sinal · mostrando os dados das $hora" else "Dados das $hora · atualizando…"
+    Row(
+        Modifier.fillMaxWidth().background(Cores.AmbarFundo).padding(horizontal = 24.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(
+            Icons.Filled.SignalCellularConnectedNoInternet0Bar, contentDescription = null,
+            tint = Cores.Ambar, modifier = Modifier.size(18.dp),
+        )
+        Text(texto, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = Cores.Ambar)
     }
 }

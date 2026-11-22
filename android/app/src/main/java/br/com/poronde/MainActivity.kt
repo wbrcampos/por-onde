@@ -1,5 +1,7 @@
 package br.com.poronde
 
+import coil.ImageLoader
+import coil.Coil
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -27,6 +29,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Fotos guardadas no aparelho valem mesmo vencidas (a Wikimedia pede revalidação):
+        // na estrada sem sinal, a foto da cidade continua aparecendo.
+        Coil.setImageLoader(
+            ImageLoader.Builder(this).respectCacheHeaders(false).crossfade(true).build(),
+        )
         // O app é sempre escuro: ícones claros na barra de status mesmo com o sistema no modo claro
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),

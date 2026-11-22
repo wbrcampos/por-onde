@@ -1,5 +1,14 @@
 package br.com.poronde.ui
 
+import androidx.compose.material.icons.filled.WbSunny
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.FilterDrama
+import androidx.compose.material.icons.filled.Dehaze
+import androidx.compose.material.icons.filled.Grain
+import androidx.compose.material.icons.filled.Umbrella
+import androidx.compose.material.icons.filled.AcUnit
+import androidx.compose.material.icons.filled.Thunderstorm
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -146,9 +155,12 @@ fun FaixaClima(clima: Clima, modifier: Modifier = Modifier) {
     Cartao(modifier) {
         Rotulo("Clima nas próximas horas")
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            ColunaHora("Agora", "${clima.temperatura}°", clima.condicao, destaque = true)
+            ColunaHora(
+                "Agora", "${clima.temperatura}°", clima.condicao,
+                clima.proximasHoras.firstOrNull()?.chanceChuva, destaque = true,
+            )
             clima.proximasHoras.drop(1).take(3).forEach { h ->
-                ColunaHora(h.hora, "${h.temperatura}°", h.condicao)
+                ColunaHora(h.hora, "${h.temperatura}°", h.condicao, h.chanceChuva)
             }
         }
         val extremos = listOfNotNull(
@@ -160,11 +172,40 @@ fun FaixaClima(clima: Clima, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun RowScope.ColunaHora(hora: String, temp: String, condicao: String, destaque: Boolean = false) {
-    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+private fun RowScope.ColunaHora(
+    hora: String, temp: String, condicao: String, chuva: Int?, destaque: Boolean = false,
+) {
+    // Ícone no lugar do texto ("parcialmente nublado" não cabia e cortava)
+    Column(
+        Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
         Text(hora, fontSize = 12.sp, color = Cores.TextoMudo)
+        Icon(
+            iconeTempo(condicao), contentDescription = condicao,
+            tint = if (destaque) Cores.Ambar else Cores.TextoSuave, modifier = Modifier.size(26.dp),
+        )
         Text(temp, fontSize = 22.sp, fontWeight = FontWeight.Bold, color = if (destaque) Cores.Ambar else Cores.Texto)
-        Text(condicao, fontSize = 11.sp, color = Cores.TextoSuave, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        // Chance de chuva só quando vale a pena avisar
+        Text(
+            chuva?.takeIf { it >= 10 }?.let { "chuva $it%" } ?: " ",
+            fontSize = 11.sp, color = Cores.Verde, maxLines = 1,
+        )
+    }
+}
+
+/** Ícone para a condição do tempo (textos vêm da API, a partir dos códigos WMO). */
+fun iconeTempo(condicao: String): ImageVector {
+    val c = condicao.lowercase()
+    return when {
+        "trovoada" in c -> Icons.Filled.Thunderstorm
+        "gelada" in c -> Icons.Filled.AcUnit
+        "chuva" in c || "pancada" in c -> Icons.Filled.Umbrella
+        "garoa" in c -> Icons.Filled.Grain
+        "neblina" in c -> Icons.Filled.Dehaze
+        "parcialmente" in c -> Icons.Filled.FilterDrama
+        "nublado" in c -> Icons.Filled.Cloud
+        else -> Icons.Filled.WbSunny // sol, céu limpo
     }
 }
 
@@ -309,3 +350,22 @@ fun Espaco(altura: Dp) = Spacer(Modifier.padding(top = altura))
 fun EspacoH(largura: Dp) = Spacer(Modifier.width(largura))
 
 val PaddingTela = PaddingValues(horizontal = 20.dp, vertical = 12.dp)
+
+/** Botão redondo só com o alto-falante (48 dp: dá para tocar com o carro andando). */
+@Composable
+fun BotaoOuvir(descricao: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(48.dp)
+            .clip(CircleShape)
+            .background(Cores.Superficie)
+            .border(1.dp, Cores.Borda, CircleShape)
+            .clickable(role = Role.Button, onClickLabel = descricao, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            Icons.AutoMirrored.Filled.VolumeUp, contentDescription = descricao,
+            tint = Cores.Ambar, modifier = Modifier.size(22.dp),
+        )
+    }
+}

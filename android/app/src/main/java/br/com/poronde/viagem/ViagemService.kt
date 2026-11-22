@@ -1,6 +1,9 @@
 package br.com.poronde.viagem
 
+import kotlinx.coroutines.Dispatchers
+import br.com.poronde.dados.Cidade
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -44,6 +47,7 @@ class ViagemService : LifecycleService() {
         // Quando consultar a API de novo
         private const val DISTANCIA_MIN_M = 300f
         private const val INTERVALO_MAX_MS = 45_000L
+        private const val INTERVALO_APOS_FALHA_MS = 10_000L // sem sinal: tenta de novo mais cedo
 
         fun iniciar(contexto: Context) {
             ContextCompat.startForegroundService(contexto, Intent(contexto, ViagemService::class.java))
@@ -61,6 +65,11 @@ class ViagemService : LifecycleService() {
     private var consulta: Job? = null
     private var gpsLigado = false
 
+    // Cidades já baixadas (a atual e a próxima), para a chegada sem sinal
+    private val cidades = LinkedHashMap<Int, Cidade>()
+    // Contexto restaurado do aparelho: só para mostrar, não conta como "antes" no diário
+    private var contextoRestaurado = false
+
     private val callback = object : LocationCallback() {
         override fun onLocationResult(resultado: LocationResult) {
             resultado.lastLocation?.let(::novaPosicao)
@@ -74,6 +83,57 @@ class ViagemService : LifecycleService() {
         criarCanal()
         lifecycleScope.launch {
             Viagem.pedidosDeFala.collect { narrador.falar(it) }
+        }
+        restaurarUltimosDados()
+        // Parado (sem posição nova do GPS), nada dispara consulta: se a última falhou,
+        // tenta de novo sozinho para a faixa "Sem sinal" sumir quando a internet voltar.
+        lifecycleScope.launch {
+            while (true) {
+                delay(INTERVALO_APOS_FALHA_MS)
+                val estado = Viagem.estado.value
+                val posicao = estado.posicao
+                if (estado.erro != null && posicao != null && consulta?.isActive != true) {
+                    ultimaConsultaMs = System.currentTimeMillis()
+                    consulta = launch { consultar(posicao) }
+                }
+            }
+        }
+    }
+
+    /** Abre com o último lugar conhecido (útil ao abrir o app já sem sinal). */
+    private fun restaurarUltimosDados() {
+        if (Viagem.estado.value.contexto != null) return
+        val salvo = Memoria.carregar(this) ?: return
+        salvo.cidades.forEach { cidades[it.codigoIbge] = it }
+        contextoRestaurado = true
+        Viagem.atualizar {
+            it.copy(
+                contexto = salvo.contexto,
+                cidade = cidades[salvo.contexto.municipio.codigoIbge],
+                dadosDeMs = salvo.horaMs,
+            )
+        }
+    }
+
+    private fun guardarUltimosDados(c: Contexto) {
+        val hora = System.currentTimeMillis()
+        val lista = cidades.values.toList()
+        lifecycleScope.launch(Dispatchers.IO) { Memoria.salvar(this@ViagemService, hora, c, lista) }
+    }
+
+    /** Baixa a próxima cidade enquanto ainda há sinal. */
+    private fun adiantarProximaCidade(c: Contexto) {
+        val codigo = c.proximaCidade?.codigoIbge ?: return
+        if (codigo in cidades) return
+        lifecycleScope.launch {
+            try {
+                cidades[codigo] = ApiCliente.cidade(codigo)
+                guardarUltimosDados(c)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // tenta de novo na próxima consulta
+            }
         }
     }
 
@@ -130,7 +190,7 @@ class ViagemService : LifecycleService() {
         val agora = System.currentTimeMillis()
         val precisa = anterior == null ||
             anterior.distanceTo(loc) >= DISTANCIA_MIN_M ||
-            agora - ultimaConsultaMs >= INTERVALO_MAX_MS
+            agora - ultimaConsultaMs >= (if (Viagem.estado.value.erro != null) INTERVALO_APOS_FALHA_MS else INTERVALO_MAX_MS)
         if (precisa && consulta?.isActive != true) {
             ultimaConsulta = loc
             ultimaConsultaMs = agora
@@ -148,9 +208,19 @@ class ViagemService : LifecycleService() {
             Viagem.atualizar { it.copy(consultando = false, erro = e.message ?: "Sem conexão") }
             return
         }
-        val anterior = Viagem.estado.value.contexto
-        Viagem.atualizar { it.copy(contexto = novo, consultando = false, erro = null) }
+        val anterior = if (contextoRestaurado) null else Viagem.estado.value.contexto
+        contextoRestaurado = false
+        Viagem.atualizar {
+            val trecho = it.trecho?.seguir(novo.proximaCidade, novo.municipio.nome)
+                ?: Trecho.novo(novo.proximaCidade, novo.municipio.nome)
+            it.copy(
+                contexto = novo, consultando = false, erro = null, trecho = trecho,
+                dadosDeMs = System.currentTimeMillis(),
+            )
+        }
         reagirMudancas(anterior, novo)
+        guardarUltimosDados(novo)
+        adiantarProximaCidade(novo)
         atualizarNotificacao(novo)
     }
 
@@ -208,12 +278,16 @@ class ViagemService : LifecycleService() {
         }
     }
 
-    private suspend fun carregarCidade(codigo: Int) = try {
-        ApiCliente.cidade(codigo).also { c -> Viagem.atualizar { it.copy(cidade = c) } }
-    } catch (e: CancellationException) {
-        throw e // cancelado (troca de aba/tela): não é falha
-    } catch (e: Exception) {
-        null
+    private suspend fun carregarCidade(codigo: Int): Cidade? {
+        val cidade = try {
+            ApiCliente.cidade(codigo).also { cidades[codigo] = it }
+        } catch (e: CancellationException) {
+            throw e // cancelado (troca de aba/tela): não é falha
+        } catch (e: Exception) {
+            cidades[codigo] // sem sinal: usa a que foi baixada antes (quando era a "próxima")
+        }
+        if (cidade != null) Viagem.atualizar { it.copy(cidade = cidade) }
+        return cidade
     }
 
     private fun descrever(c: Contexto): String = listOfNotNull(

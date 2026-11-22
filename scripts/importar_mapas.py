@@ -44,13 +44,14 @@ ARQUIVOS = {
     "areas": "organizacao_do_territorio/tipologias_do_territorio/areas_urbanizadas_do_brasil/"
              "2022/Shapefile/AreasUrbanizadas2022_Brasil.zip",
     "biomas": "informacoes_ambientais/estudos_ambientais/biomas/vetores/Biomas_250mil.zip",
-    # Relevo em 1:5.000.000 (1 MB). Mais detalhe: geomorfologia/vetores/escala_250_mil (~530 MB)
-    "relevo": "informacoes_ambientais/geomorfologia/vetores/brasil_5000_mil/Geomorfologia_5000mil.zip",
+    # Relevo em 1:250.000 (~530 MB; recortado para a região importada). Versão leve,
+    # bem menos precisa no litoral: geomorfologia/vetores/brasil_5000_mil/Geomorfologia_5000mil.zip
+    "relevo": "informacoes_ambientais/geomorfologia/vetores/escala_250_mil/versao_2026/geom_area.zip",
 }
 
 CAMPO_BIOMA = os.getenv("CAMPO_BIOMA", "Bioma")
-CAMPO_RELEVO = os.getenv("CAMPO_RELEVO", "NOM_UNIDAD")
-CAMPO_RELEVO_DESC = os.getenv("CAMPO_RELEVO_DESC", "DSC_COMPAR")
+CAMPO_RELEVO = os.getenv("CAMPO_RELEVO", "nm_unidade")
+CAMPO_RELEVO_DESC = os.getenv("CAMPO_RELEVO_DESC", "compartime")
 CAMPO_TIPO_URBANO = os.getenv("CAMPO_TIPO_URBANO", "Tipo")
 TIPOS_URBANOS_IGNORADOS = {"Loteamento vazio"}
 DIST_NUCLEO_M = float(os.getenv("DIST_NUCLEO_M", "200"))
@@ -59,7 +60,7 @@ DIST_LOCALIDADE_M = float(os.getenv("DIST_LOCALIDADE_M", "500"))
 
 # Tolerância de simplificação em graus (0,001° ≈ 110 m). Biomas têm contornos
 # com centenas de milhares de pontos; simplificar deixa a consulta rápida.
-TOLERANCIA = {"areas": 0.0, "biomas": 0.001, "relevo": 0.0}
+TOLERANCIA = {"areas": 0.0, "biomas": 0.001, "relevo": 0.0005}  # relevo 1:250 mil: ~55 m
 
 
 def baixar_arquivo(url: str, destino: Path) -> None:
@@ -293,38 +294,59 @@ def importar_localidades(r: shapefile.Reader, con: psycopg.Connection) -> None:
     print(f"{len(linhas)} localidades (sedes e vilas) gravadas")
 
 
+def _regiao_importada(con: psycopg.Connection) -> tuple[float, float, float, float] | None:
+    """Caixa que cobre todos os municípios importados (para recortar mapas do Brasil todo)."""
+    r = con.execute(
+        "SELECT min((caixa[1])[0]), min((caixa[1])[1]), max((caixa[0])[0]), max((caixa[0])[1]) FROM municipios"
+    ).fetchone()
+    return r if r and r[0] is not None else None
+
+
+def _e_agua(nome: str) -> bool:
+    n = nome.lower()
+    return n.startswith("massa d") or n.startswith("corpo d")
+
+
 def importar_poligonos(tipo: str, r: shapefile.Reader, con: psycopg.Connection) -> None:
     campos = [f[0] for f in r.fields[1:]]
     nome_campo = CAMPO_BIOMA if tipo == "biomas" else CAMPO_RELEVO
     if nome_campo not in campos:
         sys.exit(f"Coluna '{nome_campo}' não existe. Colunas do arquivo: {campos}")
     desc_campo = CAMPO_RELEVO_DESC if tipo == "relevo" and CAMPO_RELEVO_DESC in campos else None
-    n = 0
+    i_nome = campos.index(nome_campo)
+    i_desc = campos.index(desc_campo) if desc_campo else None
+    regiao = _regiao_importada(con) if tipo == "relevo" else None
+    if regiao:
+        print(f"Recortando para a região importada: {tuple(round(v, 2) for v in regiao)}")
+    linhas, lidos = [], 0
+    for sr in r.iterShapeRecords():
+        lidos += 1
+        if lidos % 20000 == 0:
+            print(f"  {lidos} feições lidas, {len(linhas)} gravadas")
+        nome = str(sr.record[i_nome] or "").strip()
+        if not nome or (tipo == "relevo" and _e_agua(nome)):
+            continue
+        if regiao and sr.shape.points:
+            x0, y0, x1, y1 = sr.shape.bbox
+            if x1 < regiao[0] or x0 > regiao[2] or y1 < regiao[1] or y0 > regiao[3]:
+                continue  # fora da região importada
+        g = _geom(sr.shape)
+        g = g and geo.simplificar(g, TOLERANCIA[tipo])
+        if not g:
+            continue
+        caixa = geo.caixa_sql(geo.caixa(g))
+        if tipo == "biomas":
+            linhas.append((nome, json.dumps(g), caixa))
+        else:
+            desc = str(sr.record[i_desc] or "").strip() if i_desc is not None else ""
+            linhas.append((nome, desc or None, json.dumps(g), caixa))
+    colunas = "(nome, geom, caixa)" if tipo == "biomas" else "(nome, descricao, geom, caixa)"
     with con.cursor() as cur:
         cur.execute(f"TRUNCATE {tipo}")
-        for sr in r.iterShapeRecords():
-            g = _geom(sr.shape)
-            g = g and geo.simplificar(g, TOLERANCIA[tipo])
-            if not g:
-                continue
-            rec = sr.record.as_dict()
-            nome = str(rec[nome_campo]).strip()
-            if not nome:
-                continue
-            caixa = geo.caixa_sql(geo.caixa(g))
-            if tipo == "biomas":
-                cur.execute(
-                    "INSERT INTO biomas (nome, geom, caixa) VALUES (%s, %s::jsonb, %s::box)",
-                    (nome, json.dumps(g), caixa),
-                )
-            else:
-                desc = str(rec[desc_campo]).strip() if desc_campo else ""
-                cur.execute(
-                    "INSERT INTO relevo (nome, descricao, geom, caixa) VALUES (%s, %s, %s::jsonb, %s::box)",
-                    (nome, desc or None, json.dumps(g), caixa),
-                )
-            n += 1
-    print(f"{n} polígonos gravados em '{tipo}'")
+        with cur.copy(f"COPY {tipo} {colunas} FROM STDIN") as copy:
+            for linha in linhas:
+                copy.write_row(linha)
+    print(f"{len(linhas)} polígonos gravados em '{tipo}' ({lidos} lidos)")
 
 
 def main() -> None:

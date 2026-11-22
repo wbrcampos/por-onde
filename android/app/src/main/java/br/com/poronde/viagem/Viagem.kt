@@ -33,6 +33,32 @@ data class EventoDiario(
     val detalhe: String,
 )
 
+/**
+ * Trecho até a próxima cidade, para a barra de progresso: guarda a distância
+ * de quando essa cidade passou a ser a próxima (a API só manda a distância atual).
+ */
+data class Trecho(
+    val codigoDestino: Int,
+    val origem: String,
+    val kmInicial: Double,
+) {
+    /** 0..1 do caminho já feito. */
+    fun progresso(kmAtual: Double): Float =
+        if (kmInicial <= 0.0) 0f else ((kmInicial - kmAtual) / kmInicial).toFloat().coerceIn(0f, 1f)
+
+    /** Próximo trecho a partir do contexto novo. */
+    fun seguir(proxima: br.com.poronde.dados.ProximaCidade?, municipioAtual: String): Trecho? =
+        if (proxima == null) null
+        else if (proxima.codigoIbge != codigoDestino) novo(proxima, municipioAtual)
+        else if (proxima.distanciaEstradaKm > kmInicial) copy(kmInicial = proxima.distanciaEstradaKm) // se afastou
+        else this
+
+    companion object {
+        fun novo(proxima: br.com.poronde.dados.ProximaCidade?, municipioAtual: String): Trecho? =
+            proxima?.let { Trecho(it.codigoIbge, municipioAtual, it.distanciaEstradaKm) }
+    }
+}
+
 data class EstadoViagem(
     val ativa: Boolean = false,
     val posicao: Posicao? = null,
@@ -43,7 +69,13 @@ data class EstadoViagem(
     val narracaoLigada: Boolean = true,
     val consultando: Boolean = false,
     val erro: String? = null,
+    val trecho: Trecho? = null,
+    /** Hora (ms) dos dados mostrados: do último acerto da API ou do que estava salvo. */
+    val dadosDeMs: Long? = null,
 ) {
+    /** Sem conexão, mas com dados anteriores na tela. */
+    val semSinal: Boolean get() = erro != null && contexto != null
+
     /** Modo que o GPS indica. */
     val modoAuto: Modo get() = if (contexto?.naCidade == true) Modo.CIDADE else Modo.ESTRADA
 

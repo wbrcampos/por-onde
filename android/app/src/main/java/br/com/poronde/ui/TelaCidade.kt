@@ -89,7 +89,7 @@ fun TelaCidade(estado: EstadoViagem, ctx: Contexto, largo: Boolean) {
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 Cabecalho(ctx, cidade)
-                cidade?.foto?.let { FotoCidade(it) }
+                cidade?.foto?.let { FotoCidade(it, estado.dadosDeMs) }
                 cidade?.resumo?.let { Text(it, fontSize = 15.sp, color = Cores.TextoSuave, lineHeight = 22.sp) }
             }
             Column(
@@ -115,7 +115,7 @@ fun TelaCidade(estado: EstadoViagem, ctx: Contexto, largo: Boolean) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item { Cabecalho(ctx, cidade) }
-            cidade?.foto?.let { f -> item { FotoCidade(f) } }
+            cidade?.foto?.let { f -> item { FotoCidade(f, estado.dadosDeMs) } }
             (ctx.clima ?: cidade?.clima)?.let { c -> item { FaixaClima(c) } }
             item { AbasCategoria(categoria, { categoria = it }) }
             when (carga) {
@@ -184,40 +184,33 @@ private fun Cabecalho(ctx: Contexto, cidade: Cidade?) = Column {
         }
         if (cidade != null) {
             // Botão compacto (só o ícone) ao lado do nome: sobra espaço para o texto da cidade
-            Box(
-                Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
-                    .background(Cores.Superficie)
-                    .border(1.dp, Cores.Borda, CircleShape)
-                    .clickable(role = Role.Button, onClickLabel = "Ouvir sobre ${cidade.nome}") {
-                        Viagem.falar(Falas.sobreCidade(cidade))
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.VolumeUp,
-                    contentDescription = "Ouvir sobre ${cidade.nome}",
-                    tint = Cores.Ambar, modifier = Modifier.size(22.dp),
-                )
-            }
+            BotaoOuvir("Ouvir sobre ${cidade.nome}", onClick = { Viagem.falar(Falas.sobreCidade(cidade)) })
         }
     }
 }
+
+/**
+ * A API manda a miniatura de 330 px da Wikimedia, borrada no tablet. As miniaturas
+ * seguem o padrão ".../thumb/.../330px-Arquivo.jpg": pede a de 960 px (uma das
+ * larguras que a Wikimedia já gera, então não sobrecarrega o servidor dela).
+ */
+private fun fotoMaior(url: String): String =
+    if ("/thumb/" in url) url.replace(Regex("""/\d+px-"""), "/960px-") else url
 
 private const val USER_AGENT_FOTOS =
     "PorOnde/${BuildConfig.VERSION_NAME} (Android; https://github.com/wbrcampos/por-onde)"
 
 @Composable
-private fun FotoCidade(foto: Foto) {
+private fun FotoCidade(foto: Foto, atualizadoEm: Long?) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         val contexto = LocalContext.current
         AsyncImage(
             // A Wikimedia recusa (403) o User-Agent padrão "okhttp/x.y" do Coil:
             // é preciso identificar o app (política de User-Agent da Wikimedia).
-            model = remember(foto.url) {
+            // atualizadoEm: refaz o pedido a cada consulta nova (ex.: a foto falhou sem sinal e a internet voltou)
+            model = remember(foto.url, atualizadoEm) {
                 ImageRequest.Builder(contexto)
-                    .data(foto.url)
+                    .data(fotoMaior(foto.url))
                     .addHeader("User-Agent", USER_AGENT_FOTOS)
                     .crossfade(true)
                     .build()

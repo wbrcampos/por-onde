@@ -45,3 +45,9 @@ CACHE_CIDADE_DIAS = int(os.getenv("CACHE_CIDADE_DIAS", "30"))
 
 # Fator para estimar distância por estrada a partir da distância em linha reta
 FATOR_ESTRADA = float(os.getenv("FATOR_ESTRADA", "1.25"))
+
+# Rotas de carro (distância e tempo reais pela estrada). OSRM público por padrão;
+# em produção, rode o OSRM na própria VPS (veja o README) e aponte para ele.
+# Vazio = desliga e usa a estimativa (linha reta × FATOR_ESTRADA).
+OSRM_URL = os.getenv("OSRM_URL", "https://router.project-osrm.org").rstrip("/")
+CACHE_ROTA_MIN = int(os.getenv("CACHE_ROTA_MIN", "30"))

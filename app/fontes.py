@@ -179,3 +179,38 @@ def artigos_proximos(lat: float, lon: float, raio_m: int = 10000, limite: int = 
         ]
 
     return db.em_cache(chave, timedelta(days=7), buscar)
+
+
+# --------------------------------------------------------------------------- #
+# OSRM — rota de carro pela estrada                                           #
+# --------------------------------------------------------------------------- #
+_http_rota = httpx.Client(timeout=5, headers={"User-Agent": config.USER_AGENT})
+
+
+def rota(lat: float, lon: float, destino_lat: float, destino_lon: float, chave_destino: str) -> dict | None:
+    """Distância (km) e tempo (min) de carro até o destino, pelo OSRM.
+
+    Cache por ~500 m de origem e por destino: o carro andando gera no máximo
+    uma consulta a cada meio quilômetro. Devolve None se o OSRM estiver
+    desligado ou falhar (quem chama usa a estimativa).
+    """
+    if not config.OSRM_URL:
+        return None
+    chave = f"rota:{round(lat * 200) / 200:.3f}:{round(lon * 200) / 200:.3f}:{chave_destino}"
+
+    def buscar():
+        r = _http_rota.get(
+            f"{config.OSRM_URL}/route/v1/driving/{lon:.5f},{lat:.5f};{destino_lon:.5f},{destino_lat:.5f}",
+            params={"overview": "false"},
+        )
+        r.raise_for_status()
+        d = r.json()
+        if d.get("code") != "Ok" or not d.get("routes"):
+            raise ValueError(f"OSRM: {d.get('code')}")
+        melhor = d["routes"][0]
+        return {"km": melhor["distance"] / 1000, "min": melhor["duration"] / 60}
+
+    try:
+        return db.em_cache(chave, timedelta(minutes=config.CACHE_ROTA_MIN), buscar)
+    except Exception:
+        return None
